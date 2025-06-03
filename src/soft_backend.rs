@@ -68,6 +68,16 @@ impl SoftBackend {
     }
 
     fn draw_cell(&mut self, xik: u16, yik: u16) {
+        let physical_char_width = (self.char_width as f32 * self.scale_factor) as usize;
+        let physical_char_height = (self.char_height as f32 * self.scale_factor) as usize;
+        let begin_x = xik as usize * physical_char_width;
+        let begin_y = yik as usize * physical_char_height;
+        
+        // Early bounds check to prevent drawing cells that would be entirely out of bounds
+        if begin_x >= self.rgb_pixmap.width() || begin_y >= self.rgb_pixmap.height() {
+            return;
+        }
+        
         let rat_cell = self.buffer.cell(Position::new(xik, yik)).unwrap();
 
         let mut rat_fg = rat_cell.fg;
@@ -86,14 +96,15 @@ impl SoftBackend {
             (fg_color, bg_color) = (dim_rgb(fg_color), dim_rgb(bg_color));
         };
 
-        let physical_char_width = (self.char_width as f32 * self.scale_factor) as usize;
-        let physical_char_height = (self.char_height as f32 * self.scale_factor) as usize;
-        let begin_x = xik as usize * physical_char_width;
-        let begin_y = yik as usize * physical_char_height;
+        let pixmap_width = self.rgb_pixmap.width();
+        let pixmap_height = self.rgb_pixmap.height();
         for y in 0..physical_char_height {
             for x in 0..physical_char_width {
-                self.rgb_pixmap
-                    .put_pixel(begin_x + x, begin_y + y, bg_color);
+                let px = begin_x + x;
+                let py = begin_y + y;
+                if px < pixmap_width && py < pixmap_height {
+                    self.rgb_pixmap.put_pixel(px, py, bg_color);
+                }
             }
         }
 
@@ -158,11 +169,13 @@ impl SoftBackend {
                                 let get_x = begin_x + real_x as usize;
                                 let get_y = begin_y + real_y as usize;
 
-                                let put_color = blend_rgba(
-                                    [fg_color[0], fg_color[1], fg_color[2], image.data[i]],
-                                    [bg_color[0], bg_color[1], bg_color[2], 255],
-                                );
-                                self.rgb_pixmap.put_pixel(get_x, get_y, put_color);
+                                if get_x < pixmap_width && get_y < pixmap_height {
+                                    let put_color = blend_rgba(
+                                        [fg_color[0], fg_color[1], fg_color[2], image.data[i]],
+                                        [bg_color[0], bg_color[1], bg_color[2], 255],
+                                    );
+                                    self.rgb_pixmap.put_pixel(get_x, get_y, put_color);
+                                }
                             }
 
                             i += 1;
