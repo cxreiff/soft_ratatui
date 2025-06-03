@@ -67,7 +67,7 @@ impl SoftBackend {
         self.rgb_pixmap.height()
     }
 
-    fn draw_cell(&mut self, xik: u16, yik: u16) {
+    fn draw_cell_background(&mut self, xik: u16, yik: u16) {
         let physical_char_width = (self.char_width as f32 * self.scale_factor) as usize;
         let physical_char_height = (self.char_height as f32 * self.scale_factor) as usize;
         let begin_x = xik as usize * physical_char_width;
@@ -79,21 +79,19 @@ impl SoftBackend {
         }
         
         let rat_cell = self.buffer.cell(Position::new(xik, yik)).unwrap();
-
-        let mut rat_fg = rat_cell.fg;
+        
         let rat_bg = rat_cell.bg;
-        if rat_cell.modifier.contains(Modifier::HIDDEN) {
-            rat_fg = rat_bg;
-        }
-
-        let (mut fg_color, mut bg_color) = if rat_cell.modifier.contains(Modifier::REVERSED) {
-            (rat_to_rgb(&rat_bg, false), rat_to_rgb(&rat_fg, true))
+        let bg_color = if rat_cell.modifier.contains(Modifier::REVERSED) {
+            let rat_fg = rat_cell.fg;
+            rat_to_rgb(&rat_fg, true)
         } else {
-            (rat_to_rgb(&rat_fg, true), rat_to_rgb(&rat_bg, false))
+            rat_to_rgb(&rat_bg, false)
         };
-
-        if rat_cell.modifier.contains(Modifier::DIM) {
-            (fg_color, bg_color) = (dim_rgb(fg_color), dim_rgb(bg_color));
+        
+        let bg_color = if rat_cell.modifier.contains(Modifier::DIM) {
+            dim_rgb(bg_color)
+        } else {
+            bg_color
         };
 
         let pixmap_width = self.rgb_pixmap.width();
@@ -107,6 +105,34 @@ impl SoftBackend {
                 }
             }
         }
+    }
+
+    fn draw_cell_text(&mut self, xik: u16, yik: u16) {
+        let physical_char_width = (self.char_width as f32 * self.scale_factor) as usize;
+        let physical_char_height = (self.char_height as f32 * self.scale_factor) as usize;
+        let begin_x = xik as usize * physical_char_width;
+        let begin_y = yik as usize * physical_char_height;
+        
+        let rat_cell = self.buffer.cell(Position::new(xik, yik)).unwrap();
+
+        let mut rat_fg = rat_cell.fg;
+        let rat_bg = rat_cell.bg;
+        if rat_cell.modifier.contains(Modifier::HIDDEN) {
+            rat_fg = rat_bg;
+        }
+
+        let (mut fg_color, bg_color) = if rat_cell.modifier.contains(Modifier::REVERSED) {
+            (rat_to_rgb(&rat_bg, false), rat_to_rgb(&rat_fg, true))
+        } else {
+            (rat_to_rgb(&rat_fg, true), rat_to_rgb(&rat_bg, false))
+        };
+
+        if rat_cell.modifier.contains(Modifier::DIM) {
+            fg_color = dim_rgb(fg_color);
+        };
+
+        let pixmap_width = self.rgb_pixmap.width();
+        let pixmap_height = self.rgb_pixmap.height();
 
         let mut text_symbol: String = rat_cell.symbol().to_string();
 
@@ -213,7 +239,7 @@ impl SoftBackend {
             .placement;
         // println!("Glyph height (bbox): {:#?}", wa);
 
-        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_width = (wa.width as f32 * 0.9) as usize; // Reduce horizontal spacing by 10%
         let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         self.cosmic_buffer.set_size(
             &mut self.font_system,
@@ -298,7 +324,7 @@ impl SoftBackend {
 
         let mut cosmic_buffer = CosmicBuffer::new(&mut font_system, metrics);
 
-        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_width = (wa.width as f32 * 0.9) as usize; // Reduce horizontal spacing by 10%
         let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         cosmic_buffer.set_size(
             &mut font_system,
@@ -393,7 +419,7 @@ impl SoftBackend {
 
         let mut cosmic_buffer = CosmicBuffer::new(&mut font_system, metrics);
 
-        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_width = (wa.width as f32 * 0.9) as usize; // Reduce horizontal spacing by 10%
         let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         cosmic_buffer.set_size(
             &mut font_system,
@@ -449,9 +475,18 @@ impl SoftBackend {
     /// Redraws the pixmap
     pub fn redraw(&mut self) {
         self.always_redraw_list = HashSet::new();
+        
+        // First pass: draw all backgrounds
         for x in 0..self.buffer.area.width {
             for y in 0..self.buffer.area.height {
-                self.draw_cell(x, y);
+                self.draw_cell_background(x, y);
+            }
+        }
+        
+        // Second pass: draw all text (allows overflow)
+        for x in 0..self.buffer.area.width {
+            for y in 0..self.buffer.area.height {
+                self.draw_cell_text(x, y);
             }
         }
     }
@@ -470,13 +505,28 @@ impl Backend for SoftBackend {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         self.update_blinking();
+        
+        // Collect all cells that need updating
+        let mut cells_to_update: Vec<(u16, u16)> = Vec::new();
+        
         for (x, y, c) in content {
             self.buffer[(x, y)] = c.clone();
-            self.draw_cell(x, y);
-            //   println!("{c:#?}");
+            cells_to_update.push((x, y));
         }
+        
+        // Add blinking cells
         for (x, y) in self.always_redraw_list.clone().iter() {
-            self.draw_cell(*x, *y);
+            cells_to_update.push((*x, *y));
+        }
+        
+        // First pass: draw backgrounds
+        for (x, y) in &cells_to_update {
+            self.draw_cell_background(*x, *y);
+        }
+        
+        // Second pass: draw text (allows overflow)
+        for (x, y) in &cells_to_update {
+            self.draw_cell_text(*x, *y);
         }
 
         Ok(())
