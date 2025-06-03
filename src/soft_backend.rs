@@ -29,6 +29,7 @@ pub struct SoftBackend {
     cosmic_buffer: CosmicBuffer,
     pub char_width: usize,
     pub char_height: usize,
+    pub scale_factor: f32,
 
     pub blink_counter: u16,
     pub blinking_fast: bool,
@@ -85,10 +86,12 @@ impl SoftBackend {
             (fg_color, bg_color) = (dim_rgb(fg_color), dim_rgb(bg_color));
         };
 
-        let begin_x = xik as usize * self.char_width;
-        let begin_y = yik as usize * self.char_height;
-        for y in 0..self.char_height {
-            for x in 0..self.char_width {
+        let physical_char_width = (self.char_width as f32 * self.scale_factor) as usize;
+        let physical_char_height = (self.char_height as f32 * self.scale_factor) as usize;
+        let begin_x = xik as usize * physical_char_width;
+        let begin_y = yik as usize * physical_char_height;
+        for y in 0..physical_char_height {
+            for x in 0..physical_char_width {
                 self.rgb_pixmap
                     .put_pixel(begin_x + x, begin_y + y, bg_color);
             }
@@ -131,7 +134,7 @@ impl SoftBackend {
 
         for run in self.cosmic_buffer.layout_runs() {
             for glyph in run.glyphs.iter() {
-                let physical_glyph = glyph.physical((0., 0.), 1.0);
+                let physical_glyph = glyph.physical((0., 0.), self.scale_factor);
 
                 //TODO : Handle Content::Color (emojis?)
 
@@ -173,7 +176,8 @@ impl SoftBackend {
     /// Sets a new font size for the terminal image.
     /// This will recreate the pixmap and do a full redraw. Do not run every frame.
     pub fn set_font_size(&mut self, font_size: i32) {
-        let metrics = Metrics::new(font_size as f32, font_size as f32);
+        let scaled_font_size = font_size as f32 * self.scale_factor;
+        let metrics = Metrics::new(scaled_font_size, scaled_font_size);
         self.cosmic_buffer
             .set_metrics(&mut self.font_system, metrics);
         let mut buffer = CosmicBuffer::new(&mut self.font_system, metrics);
@@ -186,7 +190,7 @@ impl SoftBackend {
         );
         buffer.shape_until_scroll(true);
         let boop = buffer.layout_runs().next().unwrap();
-        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), 1.0);
+        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), self.scale_factor);
 
         let wa = self
             .swash_cache
@@ -196,18 +200,20 @@ impl SoftBackend {
             .placement;
         // println!("Glyph height (bbox): {:#?}", wa);
 
-        let char_width = wa.width as usize;
-        let char_height = wa.height as usize;
+        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         self.cosmic_buffer.set_size(
             &mut self.font_system,
-            Some(char_width as f32),
-            Some(char_height as f32),
+            Some(char_width as f32 * self.scale_factor),
+            Some(char_height as f32 * self.scale_factor),
         );
         self.char_width = char_width;
         self.char_height = char_height;
+        let physical_width = (char_width as f32 * self.scale_factor) as usize;
+        let physical_height = (char_height as f32 * self.scale_factor) as usize;
         self.rgb_pixmap = RgbPixmap::new(
-            self.char_width * self.buffer.area.width as usize,
-            self.char_height * self.buffer.area.height as usize,
+            physical_width * self.buffer.area.width as usize,
+            physical_height * self.buffer.area.height as usize,
         );
 
         self.redraw();
@@ -229,6 +235,25 @@ impl SoftBackend {
     /// ```
 
     pub fn new_with_font(width: u16, height: u16, font_size: i32, font_data: &[u8]) -> Self {
+        Self::new_with_font_and_scale(width, height, font_size, font_data, 1.0)
+    }
+
+    /// Creates a new Software Backend with the given font data and scale factor for high-DPI displays.
+    ///
+    /// (new-with-font-and-scale width height font-size font-data scale-factor) -> SoftBackend
+    ///
+    /// * width        : u16   - Width of the terminal in cells
+    /// * height       : u16   - Height of the terminal in cells
+    /// * font-size    : i32   - Font size in pixels (before scaling)
+    /// * font-data    : &[u8] - Byte slice of the font (e.g., included with `include_bytes!`)
+    /// * scale-factor : f32   - Scale factor for high-DPI displays (e.g., 2.0 for retina displays)
+    ///
+    /// # Examples
+    /// ```rust
+    /// static FONT_DATA: &[u8] = include_bytes!("../../assets/iosevka.ttf");
+    /// let backend = SoftBackend::new_with_font_and_scale(20, 20, 16, FONT_DATA, 2.0);
+    /// ```
+    pub fn new_with_font_and_scale(width: u16, height: u16, font_size: i32, font_data: &[u8], scale_factor: f32) -> Self {
         let mut swash_cache = SwashCache::new();
 
         let mut db = Database::new();
@@ -237,7 +262,8 @@ impl SoftBackend {
         //  db.set_monospace_family("Fira Mono");
 
         let mut font_system = FontSystem::new_with_locale_and_db("English".to_string(), db);
-        let metrics = Metrics::new(font_size as f32, font_size as f32);
+        let scaled_font_size = font_size as f32 * scale_factor;
+        let metrics = Metrics::new(scaled_font_size, scaled_font_size);
 
         let mut buffer = CosmicBuffer::new(&mut font_system, metrics);
         let mut buffer = buffer.borrow_with(&mut font_system);
@@ -248,7 +274,7 @@ impl SoftBackend {
         );
         buffer.shape_until_scroll(true);
         let boop = buffer.layout_runs().next().unwrap();
-        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), 1.0);
+        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), scale_factor);
 
         let wa = swash_cache
             .get_image(&mut font_system, physical_glyph.cache_key)
@@ -259,15 +285,17 @@ impl SoftBackend {
 
         let mut cosmic_buffer = CosmicBuffer::new(&mut font_system, metrics);
 
-        let char_width = wa.width as usize;
-        let char_height = wa.height as usize;
+        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         cosmic_buffer.set_size(
             &mut font_system,
-            Some(char_width as f32),
-            Some(char_height as f32),
+            Some(char_width as f32 * scale_factor),
+            Some(char_height as f32 * scale_factor),
         );
 
-        let rgb_pixmap = RgbPixmap::new(char_width * width as usize, char_height * height as usize);
+        let physical_width = (char_width as f32 * scale_factor) as usize;
+        let physical_height = (char_height as f32 * scale_factor) as usize;
+        let rgb_pixmap = RgbPixmap::new(physical_width * width as usize, physical_height * height as usize);
 
         let mut return_struct = Self {
             buffer: Buffer::empty(Rect::new(0, 0, width, height)),
@@ -279,6 +307,7 @@ impl SoftBackend {
             cosmic_buffer,
             char_width,
             char_height,
+            scale_factor,
 
             blink_counter: 0,
             blinking_fast: false,
@@ -306,10 +335,30 @@ impl SoftBackend {
     /// let backend = SoftBackend::new_with_system_fonts(20, 20, 16);
     /// ```
     pub fn new_with_system_fonts(width: u16, height: u16, font_size: i32) -> Self {
+        Self::new_with_system_fonts_and_scale(width, height, font_size, 1.0)
+    }
+
+    /// Creates a new Software Backend using system fonts with scale factor for high-DPI displays.
+    ///
+    /// (new-with-system-fonts-and-scale width height font-size scale-factor) -> SoftBackend
+    ///
+    /// * width        : u16   - Width of the terminal in cells
+    /// * height       : u16   - Height of the terminal in cells
+    /// * font-size    : i32   - Font size in pixels (before scaling)
+    /// * scale-factor : f32   - Scale factor for high-DPI displays (e.g., 2.0 for retina displays)
+    ///
+    /// ⚠️ Not supported on WASM/Web targets.
+    ///
+    /// # Examples
+    /// ```rust
+    /// let backend = SoftBackend::new_with_system_fonts_and_scale(20, 20, 16, 2.0);
+    /// ```
+    pub fn new_with_system_fonts_and_scale(width: u16, height: u16, font_size: i32, scale_factor: f32) -> Self {
         let mut swash_cache = SwashCache::new();
 
         let mut font_system = FontSystem::new();
-        let metrics = Metrics::new(font_size as f32, font_size as f32);
+        let scaled_font_size = font_size as f32 * scale_factor;
+        let metrics = Metrics::new(scaled_font_size, scaled_font_size);
 
         let mut buffer = CosmicBuffer::new(&mut font_system, metrics);
         let mut buffer = buffer.borrow_with(&mut font_system);
@@ -320,7 +369,7 @@ impl SoftBackend {
         );
         buffer.shape_until_scroll(true);
         let boop = buffer.layout_runs().next().unwrap();
-        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), 1.0);
+        let physical_glyph = boop.glyphs.iter().next().unwrap().physical((0., 0.), scale_factor);
 
         let wa = swash_cache
             .get_image(&mut font_system, physical_glyph.cache_key)
@@ -331,15 +380,17 @@ impl SoftBackend {
 
         let mut cosmic_buffer = CosmicBuffer::new(&mut font_system, metrics);
 
-        let char_width = wa.width as usize;
-        let char_height = wa.height as usize;
+        let char_width = (wa.width as f32 * 0.88) as usize; // Reduce horizontal spacing by 12%
+        let char_height = (wa.height as f32 * 0.85) as usize; // Reduce vertical spacing by 15%
         cosmic_buffer.set_size(
             &mut font_system,
-            Some(char_width as f32),
-            Some(char_height as f32),
+            Some(char_width as f32 * scale_factor),
+            Some(char_height as f32 * scale_factor),
         );
 
-        let rgb_pixmap = RgbPixmap::new(char_width * width as usize, char_height * height as usize);
+        let physical_width = (char_width as f32 * scale_factor) as usize;
+        let physical_height = (char_height as f32 * scale_factor) as usize;
+        let rgb_pixmap = RgbPixmap::new(physical_width * width as usize, physical_height * height as usize);
 
         let mut return_struct = Self {
             buffer: Buffer::empty(Rect::new(0, 0, width, height)),
@@ -351,6 +402,7 @@ impl SoftBackend {
             cosmic_buffer,
             char_width,
             char_height,
+            scale_factor,
 
             blink_counter: 0,
             blinking_fast: false,
@@ -371,9 +423,11 @@ impl SoftBackend {
     /// Resizes the `SoftBackend` to the specified width and height.
     pub fn resize(&mut self, width: u16, height: u16) {
         self.buffer.resize(Rect::new(0, 0, width, height));
+        let physical_width = (self.char_width as f32 * self.scale_factor) as usize;
+        let physical_height = (self.char_height as f32 * self.scale_factor) as usize;
         let rgb_pixmap = RgbPixmap::new(
-            self.char_width as usize * width as usize,
-            self.char_height as usize * height as usize,
+            physical_width * width as usize,
+            physical_height * height as usize,
         );
         self.rgb_pixmap = rgb_pixmap;
         self.redraw();
